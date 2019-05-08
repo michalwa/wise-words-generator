@@ -31,15 +31,16 @@ def replaceSpecialCharacters(s):
 def getQuotes(n):
     params = {
         'filter[orderby]': 'rand', 
-        'filter[posts_per_page]': 30
+        'filter[posts_per_page]': 40
     }
     quotes = []
     while len(quotes) < n:
         req = get(url=url, params=params)
+        print('Fetched quotes: ' +  str(len(quotes)) + '/' + str(n))
         if req.ok:
             rawQuotes = loads(req.text)
             for q in rawQuotes:
-                if len(quotes) < 100:
+                if len(quotes) < n:
                     content = q['content']
                     quote = content[len('<p>'):content.index('</p>')]
                     quote = removeHTMLTags(quote)
@@ -87,17 +88,9 @@ class MarkovChain:
 
 if __name__ == '__main__':
     if len(argv) > 1:
-        if argv[1] == 'generate':
-            quotes = getQuotes(100)
-            print('"' + MarkovChain(quotes, 8).generate() + '"\n' + '~ your PC')
-
-
+        if argv[1] == '--generate':
+            quotes = getQuotes(1000)
+            print('\n')
+            print('"' + MarkovChain(quotes, 10).generate() + '"\n' + '~ your PC')
     
-
-
-        
-    
-
-
-    
-
+            
