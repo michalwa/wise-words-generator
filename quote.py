@@ -1,18 +1,20 @@
-from sys import argv
-from json import loads
-from requests import get
+import sys
+import re
+import json
+import requests
+from typing import List, Set, Dict
+from argparse import ArgumentParser
 from random import choice
 
-url = 'http://quotesondesign.com/wp-json/posts'
+API_URL = 'http://quotesondesign.com/wp-json/posts'
 
-def removeHTMLTags(s):
-    while s.find('<') >= 0:
-        tagStartIndex = s.find('<')
-        tagEndIndex = s.find('>', tagStartIndex + 1)
-        s = s[:tagStartIndex] + s[tagEndIndex + 1:]
-    return s
 
-def replaceSpecialCharacters(s):
+def sanitize_quote(text: str) -> str:
+
+    # Strip HTML tags
+    text = re.sub(re.compile('<.*?>'), '', text)  # type: str
+
+    # What is the purpose of this, I'm not really sure?
     replace = {
         '&#8217;': '\'',
         '&#8216;': '\'',
@@ -22,75 +24,109 @@ def replaceSpecialCharacters(s):
         '&#8211;': '-',
         '&#8212;': '-',
         '&#8230;': '...',
-        '&#038;': '&'
+        '&#038;': '&',
+
+        # also remove these
+        '\n': '',
+        '\r': ''
     }
     for c in replace:
-        s = s.replace(c, replace[c])
-    return s
+        text = text.replace(c, replace[c])
 
-def getQuotes(n):
+    # Strip leading and trailing whitespaces
+    return text.strip()
+
+
+def fetch_quotes(n: int, batch_size: int) -> List[str]:
     params = {
-        'filter[orderby]': 'rand', 
-        'filter[posts_per_page]': 40
+        'filter[orderby]': 'rand',
+        'filter[posts_per_page]': batch_size
     }
-    quotes = []
+
+    # Make this a set so there are no duplicates
+    quotes = set()  # type: Set[str]
+
     while len(quotes) < n:
-        req = get(url=url, params=params)
-        print('Fetched quotes: ' +  str(len(quotes)) + '/' + str(n))
-        if req.ok:
-            rawQuotes = loads(req.text)
-            for q in rawQuotes:
-                if len(quotes) < n:
-                    content = q['content']
-                    quote = content[len('<p>'):content.index('</p>')]
-                    quote = removeHTMLTags(quote)
-                    quote = replaceSpecialCharacters(quote)
-                    if quote not in quotes:
-                        quotes.append(quote)
-    return quotes
+        response = requests.get(url=API_URL, params=params)
+        if response.ok:
+            for q in json.loads(response.text):
+                quotes.add(sanitize_quote(q['content']))
+                if len(quotes) >= n:
+                    break
 
-class MarkovChain:
-    def __init__(self, data, n):
-        self.data = data
-        self.n = n
-        self.ngrams = {}
-        for s in data:
-            for x in range(0, len(s) - n + 1):
-                gram = s[x:x+n] 
-                if gram not in self.ngrams:
-                    self.ngrams[gram] = {}
-                nextChar = ''
-                if x + n < len(s):
-                    nextChar = s[x+n]
-                if nextChar in self.ngrams[gram]:
-                    self.ngrams[gram][nextChar] += 1
+            print('Fetched %d/%d quotes.' % (len(quotes), n))
+        else:
+            print('Error fetching quotes.')
+            exit(1)
+
+    return list(quotes)
+
+
+class Generator:
+    def __init__(self, dataset: List[str], ngram_len: int):
+        self.__dataset = dataset
+        self.__ngram_len = ngram_len
+        self.__ngrams = {}  # type: Dict[str, Dict[str, int]]
+
+        for s in dataset:
+            for start in range(0, len(s) - ngram_len + 1):
+
+                # Get a slice of the string as the ngram
+                gram = s[start:start + ngram_len]
+                if gram not in self.__ngrams:
+                    self.__ngrams[gram] = {}
+
+                # Find what character comes after the ngram
+                next_char = ''
+                if start + ngram_len < len(s):
+                    next_char = s[start + ngram_len]
+
+                # Increment the probability of that character appearing after the ngram
+                if next_char in self.__ngrams[gram]:
+                    self.__ngrams[gram][next_char] += 1
                 else:
-                    self.ngrams[gram][nextChar] = 1
+                    self.__ngrams[gram][next_char] = 1
 
-    def generate(self):
-        currentGram = choice(self.data)[0:self.n]
-        result = currentGram
+    def generate(self) -> str:
+
+        # Choose the start of a random quote in the dataset as the first ngram
+        current = choice(self.__dataset)[0:self.__ngram_len]  # type: str
+        result = current
+
         running = True
-        while running == True:
-            pool = []
-            letters = self.ngrams[currentGram]
-            for l in letters:
-                times = letters[l]
-                for t in range(0, times):
-                    pool.append(l)
-            nextChar = choice(pool)
-            if nextChar == '':
+        while running:
+            pool = []  # type: List[str]
+            for char, times in self.__ngrams[current].items():
+                pool += [char] * times
+
+            next_char = choice(pool)
+            if next_char == '':
                 running = False
             else:
-                result += nextChar
-                currentGram = result[len(result) - self.n:]
+                result += next_char
+                current = result[len(result) - self.__ngram_len:]
+
         return result
 
+
 if __name__ == '__main__':
-    if len(argv) > 1:
-        if argv[1] == '--generate':
-            quotes = getQuotes(1000)
-            print('\n')
-            print('"' + MarkovChain(quotes, 10).generate() + '"\n' + '~ your PC')
-    
-            
+
+    # Parse options
+    parser = ArgumentParser(description='Generates quotes.')
+
+    parser.add_argument('--dataset-size',       dest='dataset_size', default=200, type=int,
+                        help='how many quotes to fetch from the API to use as the source dataset')
+
+    parser.add_argument('--dataset-batch-size', dest='batch_size',   default=40,  type=int,
+                        help='how many quotes to fetch in a single request')
+
+    parser.add_argument('--ngram-length',       dest='ngram_length', default=5,   type=int,
+                        help='length of ngrams to use for the Markov chain')
+
+    args = parser.parse_args()
+
+    # Generate & print
+    quotes = fetch_quotes(args.dataset_size, args.batch_size)
+    quote = Generator(quotes, args.ngram_length).generate()
+
+    print('\n\t"%s"\n' % quote)
